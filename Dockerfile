@@ -30,6 +30,8 @@ COPY ./boot.sh /sbin/boot.sh
 RUN chmod +x /sbin/boot.sh
 CMD [ "/sbin/boot.sh" ]
 
+RUN apk add openssh rsync
+
 VOLUME ["/config", \
   "/dir1", "/dir2", "/dir3", "/dir4", "/dir5", "/dir6", "/dir7", "/dir8", "/dir9", "/dir10", \
   "/dir11", "/dir12", "/dir13", "/dir14", "/dir15", "/dir16", "/dir17", "/dir18", "/dir19", "/dir20"]
