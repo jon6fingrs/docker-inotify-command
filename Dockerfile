@@ -1,20 +1,19 @@
-FROM alpine:3.7
+FROM alpine:3.20
 
-MAINTAINER David Coppit <david@coppit.org>
+LABEL maintainer="David Coppit <david@coppit.org>"
 
 ENV TERM=xterm-256color
 
 RUN true && \
 \
-echo "http://dl-cdn.alpinelinux.org/alpine/v3.7/community" >> /etc/apk/repositories && \
 apk --update upgrade && \
 \
 # Basics, including runit
-apk add bash curl htop runit && \
+apk add --no-cache bash curl htop runit openssh rsync && \
 \
 # Needed by our code
-apk add --no-cache python3 icu-libs shadow && \
-pip3 install watchdog && \
+apk add --no-cache python3 py3-pip icu-libs shadow && \
+pip3 install --no-cache-dir --break-system-packages watchdog && \
 wget https://raw.githubusercontent.com/phusion/baseimage-docker/9f998e1a09bdcb228af03595092dbc462f1062d0/image/bin/setuser -O /sbin/setuser && \
 chmod +x /sbin/setuser && \
 \
@@ -30,19 +29,17 @@ COPY ./boot.sh /sbin/boot.sh
 RUN chmod +x /sbin/boot.sh
 CMD [ "/sbin/boot.sh" ]
 
-RUN apk add openssh rsync
-
 VOLUME ["/config", \
   "/dir1", "/dir2", "/dir3", "/dir4", "/dir5", "/dir6", "/dir7", "/dir8", "/dir9", "/dir10", \
   "/dir11", "/dir12", "/dir13", "/dir14", "/dir15", "/dir16", "/dir17", "/dir18", "/dir19", "/dir20"]
 
 # Set the locale, to help Python and the user's applications deal with files that have non-ASCII characters
-ENV LANG en_US.UTF-8
-ENV LANGUAGE en_US:en
-ENV LC_ALL en_US.UTF-8
+ENV LANG=en_US.UTF-8
+ENV LANGUAGE=en_US:en
+ENV LC_ALL=en_US.UTF-8
 
-ENV UMAP ""
-ENV GMAP ""
+ENV UMAP=""
+ENV GMAP=""
 
 COPY sample.conf monitor.py runas.sh /files/
 # Make sure it's readable by $UID
