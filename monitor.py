@@ -1,5 +1,4 @@
 #!/usr/bin/python3
-
 import datetime
 import json
 import logging
@@ -9,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import time
+
 from watchdog.observers import Observer
 from watchdog.observers.polling import PollingObserver
 from watchdog.events import FileSystemEventHandler
@@ -16,46 +16,37 @@ from watchdog.events import FileSystemEventHandler
 RUNAS = "/files/runas.sh"
 
 #-----------------------------------------------------------------------------------------------------------------------
-
 def remove_linefeeds(input_filename):
     temp = tempfile.NamedTemporaryFile(delete=False)
-
     with open(input_filename, "r") as input_file:
         with open(temp.name, "w") as output_file:
             for line in input_file:
                 output_file.write(line)
-
     return temp.name
 
 #-----------------------------------------------------------------------------------------------------------------------
-
 def to_seconds(timestr):
     hms = timestr.split(':')
-
     seconds = 0
-
     while hms:
         seconds *= 60
         seconds += int(hms.pop(0))
-
     return seconds
 
 #-----------------------------------------------------------------------------------------------------------------------
-
 def read_config(config_file):
     config_file = remove_linefeeds(config_file)
 
     # Shenanigans to read docker env vars, and the bash format config file. I didn't want to ask them to change their
     # config files.
     dump_command = '{} -c "import os, json;print(json.dumps(dict(os.environ)))"'.format(sys.executable)
-
     pipe = subprocess.Popen(['/bin/bash', '-c', dump_command], stdout=subprocess.PIPE)
     string = pipe.stdout.read().decode('ascii')
     base_env = json.loads(string)
 
     source_command = 'source {}'.format(config_file)
     pipe = subprocess.Popen(['/bin/bash', '-c', 'set -a && {} && {}'.format(source_command,dump_command)],
-        stdout=subprocess.PIPE)
+                             stdout=subprocess.PIPE)
     string = pipe.stdout.read().decode('ascii')
     config_env = json.loads(string)
 
@@ -64,13 +55,11 @@ def read_config(config_file):
 
     class Args:
         pass
-
     args = Args()
 
     if "WATCH_DIR" not in env:
         logging.error("Configuration error. WATCH_DIR must be defined.")
         sys.exit(1)
-
     if not os.path.isdir(env["WATCH_DIR"]):
         logging.error("Configuration error. WATCH_DIR must be a directory.")
         sys.exit(1)
@@ -129,28 +118,40 @@ def read_config(config_file):
         if not re.match("(yes|no|true|false|0|1)", env["USE_POLLING"], re.IGNORECASE):
             logging.error("Configuration error. USE_POLLING must be \"yes\" or \"no\".")
             sys.exit(1)
-
         args.use_polling = True if re.match("(yes|true|1)", env["USE_POLLING"], re.IGNORECASE) else False
     else:
         args.use_polling = False
 
+    # --- ADDED: optional EXCLUDE_PATTERN config value -----------------------------------------------------------
+    # A Python regex matched against the full event path. Any event whose src_path matches is ignored entirely -
+    # it won't reset the settle timer or trigger the command. Leave EXCLUDE_PATTERN unset/blank to disable.
+    if "EXCLUDE_PATTERN" in env and env["EXCLUDE_PATTERN"].strip():
+        try:
+            args.exclude_pattern = re.compile(env["EXCLUDE_PATTERN"])
+        except re.error as e:
+            logging.error("Configuration error. EXCLUDE_PATTERN is not a valid regex: %s", e)
+            sys.exit(1)
+    else:
+        args.exclude_pattern = None
+    # -------------------------------------------------------------------------------------------------------------
+
     logging.info("CONFIGURATION:")
-    logging.info("      WATCH_DIR=%s", args.watch_dir)
-    logging.info("SETTLE_DURATION=%s", args.settle_duration)
-    logging.info("  MAX_WAIT_TIME=%s", args.max_wait_time)
-    logging.info("     MIN_PERIOD=%s", args.min_period)
-    logging.info("        COMMAND=%s", args.command)
-    logging.info("        USER_ID=%s", args.user_id)
-    logging.info("       GROUP_ID=%s", args.group_id)
-    logging.info("          UMASK=%s", args.umask)
-    logging.info("          DEBUG=%s", args.debug)
-    logging.info("    USE_POLLING=%s", args.use_polling)
+    logging.info("            WATCH_DIR=%s", args.watch_dir)
+    logging.info("       SETTLE_DURATION=%s", args.settle_duration)
+    logging.info("         MAX_WAIT_TIME=%s", args.max_wait_time)
+    logging.info("            MIN_PERIOD=%s", args.min_period)
+    logging.info("               COMMAND=%s", args.command)
+    logging.info("               USER_ID=%s", args.user_id)
+    logging.info("              GROUP_ID=%s", args.group_id)
+    logging.info("                 UMASK=%s", args.umask)
+    logging.info("                 DEBUG=%s", args.debug)
+    logging.info("           USE_POLLING=%s", args.use_polling)
     logging.info("IGNORE_EVENTS_WHILE_COMMAND_IS_RUNNING=%s", args.ignore_events_while_command_is_running)
+    logging.info("       EXCLUDE_PATTERN=%s", env.get("EXCLUDE_PATTERN", "(none)"))  # ADDED
 
     return args
 
 #-----------------------------------------------------------------------------------------------------------------------
-
 # This is the main watchdog class. When a new event is detected, the class keeps track of the time since that event was
 # detected, as well as the time since any event was detected. After being reset, it starts looking for a new event
 # again.
@@ -167,6 +168,12 @@ class ModifyHandler(FileSystemEventHandler):
         # Ignore changes to the watch dir itself. event.src_path doesn't exist for delete events
         if os.path.exists(event.src_path) and os.path.samefile(args.watch_dir, event.src_path):
             return
+
+        # --- ADDED: skip events whose path matches EXCLUDE_PATTERN -------------------------------------------
+        if args.exclude_pattern and args.exclude_pattern.search(event.src_path):
+            logging.debug("Ignoring excluded path: %s", event.src_path)
+            return
+        # -------------------------------------------------------------------------------------------------------
 
         self._last_event_time = datetime.datetime.now()
 
@@ -191,7 +198,6 @@ class ModifyHandler(FileSystemEventHandler):
         return (datetime.datetime.now() - self._last_event_time).total_seconds()
 
 #-----------------------------------------------------------------------------------------------------------------------
-
 def run_command(args, event_handler):
     # Reset before, in case IGNORE_EVENTS_WHILE_COMMAND_IS_RUNNING is set, and new events come in while the command is
     # running
@@ -208,63 +214,46 @@ def run_command(args, event_handler):
     logging.info("Finished running command. Exit code was %i", returncode)
 
 #-----------------------------------------------------------------------------------------------------------------------
-
 def wait_for_change(event_handler):
     logging.info("Waiting for new change")
-            
     while True:
         event = event_handler.detected_event()
-
         if event:
             logging.info("Detected change to %s %s", "directory" if event.is_directory else "file", event.src_path)
             return
-
         time.sleep(.1)
 
 #-----------------------------------------------------------------------------------------------------------------------
-
 def wait_for_events_to_stabilize(settle_duration, max_wait_time, event_handler):
     logging.info("Waiting for watch directory to stabilize for %i seconds before triggering command", settle_duration)
-
     while True:
         if event_handler.time_since_last_event() >= settle_duration:
             logging.info("Watch directory stabilized for %s seconds. Triggering command.", settle_duration)
             return
         elif event_handler.time_since_detected() >= max_wait_time:
             logging.warn("WARNING: Watch directory didn't stabilize for %s seconds. Triggering command anyway.",
-                    max_wait_time)
+                          max_wait_time)
             return
-
         time.sleep(.1)
 
 #-----------------------------------------------------------------------------------------------------------------------
-
 def block_until_min_period(min_period, last_command_run):
     seconds_since_last_run = (datetime.datetime.now() - last_command_run).total_seconds()
-
     if seconds_since_last_run >= min_period:
         return
-
     logging.info("Command triggered, but it's too soon to run the command again. Waiting another %i seconds",
-            args.min_period - seconds_since_last_run)
-
+                  args.min_period - seconds_since_last_run)
     time.sleep(min_period - seconds_since_last_run)
 
 #-----------------------------------------------------------------------------------------------------------------------
-
 config_file = sys.argv[1]
-
 name = os.path.splitext(os.path.basename(config_file))[0]
-
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] {}: %(message)s'.format(name), datefmt='%Y-%m-%d %H:%M:%S')
 
 args = read_config(config_file)
-
 #args["DEBUG"] = True
-
 if args.debug:
     logging.getLogger().setLevel(logging.DEBUG)
-
 
 logging.info("Starting monitor for %s", name)
 
@@ -303,7 +292,7 @@ try:
 
         # In case new events came in while we were sleeping. (But skip this if we've already waited our max_wait_time)
         if event_handler.time_since_last_event() < args.settle_duration and \
-                event_handler.time_since_detected() < args.max_wait_time:
+           event_handler.time_since_detected() < args.max_wait_time:
             logging.info("Detected new changes while waiting.")
             state = "waiting to stabilize or time out"
             continue
@@ -312,9 +301,8 @@ try:
         run_command(args, event_handler)
         last_command_run = datetime.datetime.now()
         state = "waiting for change"
+
 except KeyboardInterrupt:
     observer.stop()
-
-observer.join()
-
-sys.exit(0)
+    observer.join()
+    sys.exit(0)
